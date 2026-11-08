@@ -1,0 +1,11 @@
+# keys: never commit them
+openrouter_key.txt
+openrouter_management_key.txt
+
+# local Windows folder icon and shortcut (absolute paths)
+desktop.ini
+*.lnk
+
+# python
+__pycache__/
+*.pyc
