@@ -530,8 +530,8 @@ def report(o, cl, show):
         if not cl:
             L.append('Claude Code  ' + Color.paint('(no data yet: filled in by the status line)', Color.DIM))
         else:
-            L.append('Claude Code  ' + Color.paint('(last update {}{})'.format(
-                ago(cl.get('ts')), ', ' + cl['model'] if cl.get('model') else ''), Color.DIM))
+            L.append('Claude Code' + (' ' + cl['model'] if cl.get('model') else '')
+                     + Color.paint('  (last update {})'.format(ago(cl.get('ts'))), Color.DIM))
             for label, used, resets_at in claude_windows(cl.get('rate_limits')):
                 L.append('  {}:  {}  {} used, resets {}'.format(
                     label, bar(used / 100), Color.used(pct(used), used), clock(resets_at)))
