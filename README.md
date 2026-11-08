@@ -38,7 +38,7 @@ installing a runtime or handing my credentials to anything. This is it.
 | OpenRouter | Account-wide balance (optional) | `GET /api/v1/credits`, which needs a separate **management key**; shown only if `openrouter_management_key.txt` exists |
 | Claude Code | 5-hour and 7-day plan limits: % used and reset time | Claude Code hands them to the status line itself (`rate_limits`, documented, v2.1.251+). The script caches them in `~/.cache/quotaline/claude.json` so the other modes can show them outside Claude Code, with their age |
 
-Claude's limits appear after the first reply of each session. That is documented behaviour, not
+Reset times come with a countdown (`13:10, 2h36m`). Claude's limits appear after the first reply of each session. That is documented behaviour, not
 a bug. Colours everywhere follow a continuous green → yellow → red gradient by percentage used, anchored at a clear yellow for 50 % and an unmistakable red for 80 %: the status line text, the report, the widget's text and border, and the tray dot (the dot and the border show the worst of what is displayed). Terminals without 24-bit colour get three plain steps instead; set `QUOTALINE_TRUECOLOR=1` or `0` to force either.
 
 ## Where you can see it

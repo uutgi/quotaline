@@ -141,6 +141,23 @@ def clock(epoch):
     return WEEKDAYS[t.weekday()] + ' ' + t.strftime('%H:%M')
 
 
+def until(epoch, compact=False):
+    """Time left until an epoch: '2h 37m' / '3d 4h' / '12m' (compact: no spaces)."""
+    if epoch is None:
+        return '?'
+    s = max(0, int(float(epoch) - time.time()))
+    d, rest = divmod(s, 86400)
+    h, rest = divmod(rest, 3600)
+    m = rest // 60
+    if d:
+        parts = ['{}d'.format(d), '{}h'.format(h)]
+    elif h:
+        parts = ['{}h'.format(h), '{}m'.format(m)]
+    else:
+        parts = ['{}m'.format(m)]
+    return ('' if compact else ' ').join(parts)
+
+
 def ago(ts):
     if ts is None:
         return 'never'
@@ -460,7 +477,7 @@ def claude_short(cl, header='Claude'):
     """'Claude: 5h 22% (13:10), 7d 35% (Thu 13:00)' from the cache (other modes than the status line)."""
     if not cl:
         return header + ': ' + Color.paint('no data yet', Color.DIM)
-    parts = [Color.used(label + ' ' + pct(used), used) + Color.paint(' (' + clock(r) + ')', Color.DIM)
+    parts = [Color.used(label + ' ' + pct(used), used) + Color.paint(' (' + clock(r) + ', ' + until(r, compact=True) + ')', Color.DIM)
              for label, used, r in claude_windows(cl.get('rate_limits'))]
     return header + ': ' + ', '.join(parts)
 
@@ -482,7 +499,7 @@ def statusline(d, show):
         if windows:
             for label, used, resets_at in windows:
                 parts.append(Color.used(label + ' ' + pct(used), used)
-                             + Color.paint(' (' + clock(resets_at) + ')', Color.DIM))
+                             + Color.paint(' (' + clock(resets_at) + ', ' + until(resets_at, compact=True) + ')', Color.DIM))
         else:
             parts.append(Color.paint('limits after 1st reply', Color.DIM))
         blocks.append(header + ': ' + ', '.join(parts))
@@ -534,7 +551,8 @@ def report(o, cl, show):
                      + Color.paint('  (last update {})'.format(ago(cl.get('ts'))), Color.DIM))
             for label, used, resets_at in claude_windows(cl.get('rate_limits')):
                 L.append('  {}:  {}  {} used, resets {}'.format(
-                    label, bar(used / 100), Color.used(pct(used), used), clock(resets_at)))
+                    label, bar(used / 100), Color.used(pct(used), used), clock(resets_at))
+                         + Color.paint(' (in {})'.format(until(resets_at)), Color.DIM))
     return '\n'.join(L)
 
 
