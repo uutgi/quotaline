@@ -47,7 +47,7 @@ a bug. Colours everywhere follow a continuous green → yellow → red gradient 
 |---|---|---|
 | Claude Code status line | `--statusline` (set up by `--install-statusline`) | Claude Code 2.1.251+ |
 | Terminal window that refreshes | `--watch` | nothing |
-| Floating widget: small always-on-top panel, draggable; × closes (or Escape), ≡ unfolds a row of buttons inside the panel (Refresh, opacity, text size, Quit); while it refreshes a small spinner and a whimsical verb ("Tallying…", "Abacusing…") show up. Right-click gives the same as a popup menu, except on macOS, where Tk's popup menus leave the window deaf, so there it unfolds the row too. On macOS the panel keeps the native title bar (Tk there ignores clicks on bare windows) | `--widget` | tkinter (ships with Python on Windows and macOS; `sudo apt install python3-tk` on Debian/Ubuntu/Mint) |
+| Floating widget: small always-on-top panel, draggable; × closes (or Escape), ≡ unfolds a row of buttons inside the panel (Refresh, Both / Claude / OpenRouter, opacity, text size, Quit); while it refreshes a small spinner and a whimsical verb ("Tallying…", "Abacusing…") show up. Right-click gives the same as a popup menu, except on macOS, where Tk's popup menus leave the window deaf, so there it unfolds the row too. On macOS the panel keeps the native title bar (Tk there ignores clicks on bare windows) | `--widget` | tkinter (ships with Python on Windows and macOS; `sudo apt install python3-tk` on Debian/Ubuntu/Mint) |
 | Tray / menu-bar icon: coloured dot, numbers in its menu and hover text, "Open widget" on click | `--tray` | `pip install pystray pillow`; on Linux also the desktop's bindings, e.g. `sudo apt install python3-gi gir1.2-ayatanaappindicator3-0.1` |
 
 The tray is the only mode with extra packages. On Windows 11 new tray icons start in the hidden
@@ -113,6 +113,8 @@ quotaline.py --install-statusline / --uninstall-statusline
 
   --show both|claude|openrouter   what to display (default: the saved choice, else both)
   --save                          save --show, --opacity and/or --font-size as the default
+  In the widget (≡ row, right-click > Show, or keys 1 / 2 / 3) and in the tray menu (Show) the
+  Both / Claude / OpenRouter choice can be changed on the fly; it is saved as the new default.
   --interval SEC                  refresh period for --watch / --widget / --tray (60)
   --opacity 0.2-1                 widget opacity (default 0.95); also from the widget's menu or + / -
   --font-size 7-24                widget text size; also A- / A+ in the widget's menu or Ctrl + / Ctrl -

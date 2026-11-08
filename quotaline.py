@@ -18,6 +18,8 @@ Modes:
 Options:
   --show both|claude|openrouter   what to display (default: the saved choice, else both)
   --save                          save --show as the default in ~/.config/quotaline/config.json
+  The same choice can be changed on the fly in the widget (options bar, right-click > Show,
+  or keys 1 / 2 / 3) and in the tray menu (Show); the change is saved as the new default.
   --interval SECONDS              refresh period for --watch / --widget / --tray (default 60)
   --no-color
 
@@ -66,6 +68,7 @@ TIMEOUT_STATUSLINE = 2.5
 TIMEOUT_NORMAL = 8
 
 SHOW_CHOICES = ('both', 'claude', 'openrouter')
+SHOW_LABELS = (('both', 'Both'), ('claude', 'Claude'), ('openrouter', 'OpenRouter'))
 WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
 IS_WINDOWS = os.name == 'nt'
 IS_MAC = sys.platform == 'darwin'
@@ -533,8 +536,9 @@ def report(o, cl, show):
             L.append('  Spent:  today {}, week {}, month {}, all time {}'.format(
                 usd(k.get('usage_daily')), usd(k.get('usage_weekly')), usd(k.get('usage_monthly')), usd(k.get('usage'))))
             free = k.get('free_model_daily_requests') or {}
-            if free.get('limit') is not None:
-                L.append('  :free models today: {} of {} requests'.format(free.get('used', '?'), free.get('limit')))
+            if free.get('limit') is not None and (free.get('used') or 0) > 0:
+                # the daily quota of requests to :free models; only worth a line once it is being used
+                L.append('  :free models today: {} of {} requests'.format(free.get('used'), free.get('limit')))
         if o and o.get('account'):
             a = o['account']
             L.append('  Account: {} left (bought {}, used {})'.format(
@@ -621,6 +625,8 @@ def run_widget(show, interval, opacity, font_size=None):
         text_font.configure(size=new_size)
         if save:
             save_config(widget_font_size=new_size)
+        if options.winfo_ismapped():      # the options row is open: re-wrap it for the new width
+            root.after(50, layout_options)
         return new_size
     frame = tk.Frame(root, bg='#1c1c28', highlightthickness=2, highlightbackground='#48b461')
     frame.pack(fill='both', expand=True)
@@ -686,30 +692,107 @@ def run_widget(show, interval, opacity, font_size=None):
     # In-panel options bar, toggled by the menu button (and by right-click on macOS, where
     # Tk's popup menus leave the window deaf afterwards). Elsewhere right-click gets a real popup.
     options = tk.Frame(frame, bg='#1c1c28')
+    option_specs = []        # [(caption or None, [(text, command, key)])]: one captioned row per group
+    option_widgets = {}      # key -> button widget of the current layout (rebuilt on every open)
 
-    def toggle_options(_e=None):
-        if options.winfo_ismapped():
-            options.pack_forget()
-        else:
-            options.pack(fill='x', padx=8, pady=(0, 6))
+    def option_group(caption):
+        option_specs.append((caption, []))
 
-    def option_button(text, command, keep_open=False):
-        b = tk.Label(options, text=text, font=font, bg='#2b2b3d', fg='#e6e6e6', padx=8, pady=4, cursor=hand)
-        b.pack(side='left', padx=(0, 4))
+    def option_button(text, command, key=None):
+        option_specs[-1][1].append((text, command, key))
+
+    def make_button(parent, text, command):
+        b = tk.Label(parent, text=text, font=font, bg='#2b2b3d', fg='#e6e6e6', padx=8, pady=3, cursor=hand)
         b.bind('<Button-1>', lambda _e: command())   # the row stays open; a click elsewhere on the panel closes it
         b.bind('<Enter>', lambda _e: b.config(bg='#3b3b52'))
         b.bind('<Leave>', lambda _e: b.config(bg='#2b2b3d'))
         return b
 
-    option_button('Refresh', lambda: refresh())
+    def layout_options():
+        # Rebuilt every time the panel opens: one row per group with a dim caption at a fixed
+        # width ("Show", "Opacity", "Text"); each row packs its buttons left to right and wraps
+        # onto a continuation row when they would exceed the panel's current width. Opening the
+        # options therefore never makes the widget wider than its text.
+        root.update_idletasks()
+        avail = max(label.winfo_width() - 4, 160)
+        for child in options.winfo_children():
+            child.destroy()
+        option_widgets.clear()
+        capw = max([tkfont.Font(font=font).measure(c) for c, _ in option_specs if c] + [0]) + 12
+        rowh = make_button(options, 'X', lambda: None)
+        bh = rowh.winfo_reqheight(); rowh.destroy()
+
+        def new_row(caption):
+            row = tk.Frame(options, bg='#1c1c28'); row.pack(fill='x', pady=(0, 4))
+            cell = tk.Frame(row, bg='#1c1c28', width=capw, height=bh); cell.pack(side='left')
+            cell.pack_propagate(False)
+            if caption:
+                tk.Label(cell, text=caption, font=font, bg='#1c1c28', fg='#8a8a9a', anchor='w').pack(side='left', fill='y')
+            return row
+
+        for caption, items in option_specs:
+            row, used = new_row(caption), capw
+            for text, command, key in items:
+                b = make_button(row, text, command)
+                w = b.winfo_reqwidth() + 4
+                if used > capw and used + w > avail:        # continuation row, caption left blank
+                    b.destroy()
+                    row, used = new_row(None), capw
+                    b = make_button(row, text, command)
+                b.pack(side='left', padx=(0, 4))
+                used += w
+                if key:
+                    option_widgets[key] = b
+        paint_show_buttons()
+
+    def toggle_options(_e=None):
+        if options.winfo_ismapped():
+            options.pack_forget()
+        else:
+            layout_options()
+            options.pack(fill='x', padx=8, pady=(0, 2))
+
+    # What is shown (both / Claude / OpenRouter): changeable from the panel, saved as the new default.
+    view = {'show': show}
+
+    def paint_show_buttons():
+        for key, _text in SHOW_LABELS:
+            b = option_widgets.get('show:' + key)
+            if b is None:
+                continue
+            on = key == view['show']
+            b.config(bg='#3b4f7a' if on else '#2b2b3d')
+            b.bind('<Leave>', lambda _e, b=b, on=on: b.config(bg='#3b4f7a' if on else '#2b2b3d'))
+
+    def set_show(value):
+        if value not in SHOW_CHOICES or value == view['show']:
+            return
+        view['show'] = value
+        save_config(show=value)
+        show_var.set(value)
+        paint_show_buttons()
+        refresh()
+
+    option_group('Show')
+    for key, text in SHOW_LABELS:
+        option_button(text, lambda v=key: set_show(v), key='show:' + key)
+    option_group('Opacity')
     for level_pct in (100, 90, 80, 70, 60, 50, 40):
         option_button('{}%'.format(level_pct), lambda v=level_pct / 100: set_opacity(v, save=True))
-    option_button('A-', lambda: set_font_size(text_font.cget('size') - 1, save=True), keep_open=True)
-    option_button('A+', lambda: set_font_size(text_font.cget('size') + 1, save=True), keep_open=True)
+    option_group('Text')
+    option_button('A-', lambda: set_font_size(text_font.cget('size') - 1, save=True))
+    option_button('A+', lambda: set_font_size(text_font.cget('size') + 1, save=True))
+    option_group(None)
+    option_button('Refresh', lambda: refresh())
     option_button('Quit', root.destroy)
 
     menu = tk.Menu(root, tearoff=0)
     menu.add_command(label='Refresh', command=lambda: refresh())
+    show_menu = tk.Menu(menu, tearoff=0)
+    show_var = tk.StringVar(value=show)
+    for key, text in SHOW_LABELS:
+        show_menu.add_radiobutton(label=text, value=key, variable=show_var, command=lambda v=key: set_show(v))
+    menu.add_cascade(label='Show', menu=show_menu)
     opacity_menu = tk.Menu(menu, tearoff=0)
     for level_pct in (100, 90, 80, 70, 60, 50, 40):
         opacity_menu.add_command(label='{} %'.format(level_pct),
@@ -729,6 +812,9 @@ def run_widget(show, interval, opacity, font_size=None):
     root.bind('<Control-plus>', lambda _e: set_font_size(text_font.cget('size') + 1, save=True))
     root.bind('<Control-equal>', lambda _e: set_font_size(text_font.cget('size') + 1, save=True))
     root.bind('<Control-minus>', lambda _e: set_font_size(text_font.cget('size') - 1, save=True))
+    root.bind('<Key-1>', lambda _e: set_show('both'))          # 1 both, 2 Claude, 3 OpenRouter
+    root.bind('<Key-2>', lambda _e: set_show('claude'))
+    root.bind('<Key-3>', lambda _e: set_show('openrouter'))
 
     def popup(e):
         if IS_MAC:
@@ -801,8 +887,9 @@ def run_widget(show, interval, opacity, font_size=None):
             timer['id'] = None
 
         def work():
-            o, cl = collect(show)
-            results.put((report(o, cl, show), worst_used(o, cl, show)))   # coloured: see Color.enabled below
+            current = view['show']
+            o, cl = collect(current)
+            results.put((report(o, cl, current), worst_used(o, cl, current)))   # coloured: see Color.enabled below
         spin_start()
         threading.Thread(target=work, daemon=True).start()
 
@@ -858,27 +945,38 @@ def run_tray(show, interval):
         d.line([(s / 2, s / 2 + 4), (s / 2 + 12, s / 2 - 8)], fill=(255, 255, 255, 255), width=6)
         return img
 
-    state = {'o': None, 'cl': None, 'ts': 0.0}
+    state = {'o': None, 'cl': None, 'ts': 0.0, 'show': show}
 
     def gather(max_age=0):
-        state['o'], state['cl'] = collect(show, max_age=max_age)
+        state['o'], state['cl'] = collect(state['show'], max_age=max_age)
         state['ts'] = time.time()
 
     def open_widget(_icon=None, _item=None):
-        subprocess.Popen([sys.executable, os.path.abspath(__file__), '--widget', '--show', show,
+        subprocess.Popen([sys.executable, os.path.abspath(__file__), '--widget', '--show', state['show'],
                           '--interval', str(interval)])
+
+    def set_show(icon, value):
+        if value == state['show']:
+            return
+        state['show'] = value
+        save_config(show=value)
+        refresh(icon)
 
     def menu_items():
         # Built every time the menu opens, so it always shows the latest data; if the last
         # fetch is older than 15 s, refresh from the caches first (instant, no network wait).
         if time.time() - state['ts'] > 15:
             gather(max_age=60)
-        for line in report(state['o'], state['cl'], show).split('\n')[1:]:
+        for line in report(state['o'], state['cl'], state['show']).split('\n')[1:]:
             if line.strip():
                 yield pystray.MenuItem(line.rstrip(), None, enabled=False)
         yield pystray.Menu.SEPARATOR
         yield pystray.MenuItem('Open widget', open_widget, default=True)
         yield pystray.MenuItem('Refresh', lambda icon, item: refresh(icon))
+        yield pystray.MenuItem('Show', pystray.Menu(*[
+            pystray.MenuItem(text, lambda icon, item, v=key: set_show(icon, v), radio=True,
+                             checked=lambda item, k=key: state['show'] == k)
+            for key, text in SHOW_LABELS]))
         yield pystray.MenuItem('Quit', lambda icon, item: icon.stop())
 
     def apply_ui(icon, used, title):
@@ -891,8 +989,8 @@ def run_tray(show, interval):
 
     def refresh(icon):
         gather()   # network and files: fine on any thread
-        used = worst_used(state['o'], state['cl'], show)
-        title = summary(state['o'], state['cl'], show)[:120]
+        used = worst_used(state['o'], state['cl'], state['show'])
+        title = summary(state['o'], state['cl'], state['show'])[:120]
         if IS_MAC:
             # AppKit must be touched from the main thread, or the process dies with EXC_BREAKPOINT;
             # the refresh loop runs in pystray's setup thread, so hand the UI update over.
@@ -914,8 +1012,8 @@ def run_tray(show, interval):
             time.sleep(interval)
 
     gather()
-    icon = pystray.Icon('quotaline', make_icon(worst_used(state['o'], state['cl'], show)),
-                        summary(state['o'], state['cl'], show)[:120], pystray.Menu(menu_items))
+    icon = pystray.Icon('quotaline', make_icon(worst_used(state['o'], state['cl'], state['show'])),
+                        summary(state['o'], state['cl'], state['show'])[:120], pystray.Menu(menu_items))
     icon.run(setup=loop)
 
 
