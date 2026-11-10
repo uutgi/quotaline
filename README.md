@@ -36,6 +36,7 @@ installing a runtime or handing my credentials to anything. This is it.
 |---|---|---|
 | OpenRouter | What is left of the key's spending limit, spend today / this week / this month / all time, today's requests to `:free` models | `GET https://openrouter.ai/api/v1/key` with your normal API key (documented) |
 | OpenRouter | Account-wide balance (optional) | `GET /api/v1/credits`, which needs a separate **management key**; shown only if `openrouter_management_key.txt` exists |
+| OpenRouter | Spend per day and model, last 30 completed UTC days, all keys of the account (`--days`, optional) | `GET /api/v1/activity` with the same management key (documented) |
 | Claude Code | 5-hour and 7-day plan limits: % used and reset time | Claude Code hands them to the status line itself (`rate_limits`, documented, v2.1.251+). The script caches them in `~/.cache/quotaline/claude.json` so the other modes can show them outside Claude Code, with their age |
 
 Reset times come with a countdown (`13:10, 2h36m`). Claude's limits appear after the first reply of each session. That is documented behaviour, not
@@ -109,6 +110,7 @@ quotaline.py --widget               floating always-on-top panel
 quotaline.py --tray                 tray / menu-bar icon
 quotaline.py --statusline           Claude Code status line mode (JSON on stdin)
 quotaline.py --json                 same data as JSON
+quotaline.py --days [N]             OpenRouter spend per day and model, last N completed days (30)
 quotaline.py --install-statusline / --uninstall-statusline
 
   --show both|claude|openrouter   what to display (default: the saved choice, else both)
@@ -121,6 +123,22 @@ quotaline.py --install-statusline / --uninstall-statusline
   --no-color
 ```
 
+`--days` answers "what did I spend yesterday, and on which model?" (here `--days 2`):
+
+```
+OpenRouter spend per day  (UTC days, all keys of the account; today is not included)
+  Mon 2026-11-09   $0.0217     16 req  ░░░░░░░░░░
+                   $0.0215     14 req  deepseek/deepseek-v4.1-flash-1017
+                   $0.0001      2 req  openai/gpt-6-luna
+  Sun 2026-11-08   $1.3121    505 req  ██████████
+                   $1.3120    504 req  deepseek/deepseek-v4.1-flash-1017
+                   $0.0000      1 req  openai/gpt-6-luna
+  Total            $1.3337    521 req  active days: 2 of 2
+```
+
+Days are UTC days, as OpenRouter counts them, and only finished ones: today's spend is the
+"today" figure of the normal report. `--days 1` shows only yesterday, `--days 7` the last week.
+
 The status line refreshes every 30 s; OpenRouter is asked at most once every 5 minutes (cache in
 `~/.cache/quotaline/openrouter.json`). If the network is down, the last known values are shown with
 their age. The status line always refreshes the Claude cache, even with `--show openrouter`, so
@@ -132,7 +150,7 @@ the widget and the tray can show Claude's limits while Claude Code is open.
   as its label; that is not shown either.
 - No Claude credentials are read and no undocumented Anthropic endpoint is called. Outside Claude
   Code the script only shows what the status line last saved.
-- Nothing leaves your machine except the two documented OpenRouter requests.
+- Nothing leaves your machine except the documented OpenRouter requests listed above.
 
 ## Limitations
 

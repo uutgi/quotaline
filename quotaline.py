@@ -12,6 +12,7 @@ Modes:
   quotaline.py --tray                 system tray / menu-bar icon (needs: pip install pystray pillow)
   quotaline.py --statusline           Claude Code status line (reads Claude Code's JSON on stdin)
   quotaline.py --json                 the same data as JSON
+  quotaline.py --days [N]             OpenRouter spend per day and model, last N completed days (30)
   quotaline.py --install-statusline   point the statusLine of ~/.claude/settings.json at this script
   quotaline.py --uninstall-statusline
 
@@ -27,7 +28,8 @@ Data sources:
   OpenRouter: GET https://openrouter.ai/api/v1/key with a normal API key. Returns the key's
     spending limit, what is left of it, spend for today / this week / this month, and today's
     requests to :free models. The account-wide balance (GET /api/v1/credits) needs a separate
-    "management key"; it is shown too when openrouter_management_key.txt exists.
+    "management key"; it is shown too when openrouter_management_key.txt exists. The same key
+    unlocks --days: GET /api/v1/activity, spend per model for the last 30 completed UTC days.
   Claude Code: the 5-hour and 7-day plan limits are handed to the status line by Claude Code
     itself (`rate_limits`, documented, v2.1.251+). This script caches them in
     ~/.cache/quotaline/claude.json so the other modes can show them outside Claude Code, together
@@ -63,6 +65,8 @@ CLAUDE_SETTINGS = os.path.join(HOME, '.claude', 'settings.json')
 
 OPENROUTER_KEY_URL = 'https://openrouter.ai/api/v1/key'
 OPENROUTER_CREDITS_URL = 'https://openrouter.ai/api/v1/credits'
+OPENROUTER_ACTIVITY_URL = 'https://openrouter.ai/api/v1/activity'
+ACTIVITY_DAYS = 30            # the activity endpoint covers the last 30 completed UTC days
 OPENROUTER_MAX_AGE = 300      # s: the status line asks OpenRouter at most once every 5 minutes
 TIMEOUT_STATUSLINE = 2.5
 TIMEOUT_NORMAL = 8
@@ -373,6 +377,32 @@ def fetch_openrouter(timeout):
     return out
 
 
+def fetch_openrouter_days(timeout):
+    """Spend per UTC day and model for the whole account (all keys), from GET /api/v1/activity.
+    Needs the management key. Returns {'days': [newest first]} or {'error': text}."""
+    mk = openrouter_management_key()
+    if not mk:
+        return {'error': 'needs the management key (openrouter_management_key.txt)'}
+    try:
+        rows = http_json(OPENROUTER_ACTIVITY_URL, mk, timeout).get('data') or []
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403):
+            return {'error': 'HTTP {}: openrouter_management_key.txt does not hold a valid management key'.format(e.code)}
+        return {'error': describe_error(e)}
+    except Exception as e:  # noqa: BLE001
+        return {'error': describe_error(e)}
+    days = {}
+    for r in rows:
+        date = str(r.get('date') or '?')[:10]           # 'YYYY-MM-DD' (sometimes with a time after it)
+        usage, requests = float(r.get('usage') or 0), int(r.get('requests') or 0)
+        d = days.setdefault(date, {'date': date, 'usage': 0.0, 'requests': 0, 'models': {}})
+        m = d['models'].setdefault(r.get('model') or '?', {'usage': 0.0, 'requests': 0})
+        for target in (d, m):
+            target['usage'] += usage
+            target['requests'] += requests
+    return {'days': sorted(days.values(), key=lambda d: d['date'], reverse=True)}
+
+
 def load_openrouter(max_age, timeout):
     """Cache for max_age seconds; if the network fails, return the last known data, flagged."""
     cached = read_json(CACHE_OPENROUTER)
@@ -560,6 +590,36 @@ def report(o, cl, show):
     return '\n'.join(L)
 
 
+def days_report(res, n_days):
+    """OpenRouter spend per day for the last n_days completed UTC days, each day split by model."""
+    L = ['OpenRouter spend per day' + Color.paint(
+        '  (UTC days, all keys of the account; today is not included)', Color.DIM)]
+    if 'error' in res:
+        L.append('  ' + Color.level(res['error'], 'red'))
+        return '\n'.join(L)
+    cutoff = (datetime.datetime.now(datetime.timezone.utc).date()
+              - datetime.timedelta(days=n_days)).isoformat()
+    days = [d for d in res['days'] if d['date'] >= cutoff]
+    if not days:
+        L.append('  no activity in the last {} days'.format(n_days))
+        return '\n'.join(L)
+    top = max(d['usage'] for d in days) or 1.0
+    for d in days:
+        try:
+            label = WEEKDAYS[datetime.date.fromisoformat(d['date']).weekday()] + ' ' + d['date']
+        except ValueError:
+            label = d['date']
+        L.append('  {:14}  {:>8}  {:>5} req  {}'.format(
+            label, usd(d['usage'], 4), d['requests'], bar(d['usage'] / top)))
+        for model, m in sorted(d['models'].items(), key=lambda kv: -kv[1]['usage']):
+            L.append(Color.paint('  {:14}  {:>8}  {:>5} req  {}'.format(
+                '', usd(m['usage'], 4), m['requests'], model), Color.DIM))
+    L.append('  {:14}  {:>8}  {:>5} req  active days: {} of {}'.format(
+        'Total', usd(sum(d['usage'] for d in days), 4), sum(d['requests'] for d in days),
+        len(days), n_days))
+    return '\n'.join(L)
+
+
 def summary(o, cl, show):
     """Short text for tooltips and the widget title, no colours."""
     was = Color.enabled
@@ -580,6 +640,24 @@ def as_json(o, cl):
 
 
 # ---------------------------------------------------------------- widget (tkinter, stdlib)
+
+def point_on_screen(root, x, y):
+    """True when (x, y) lies on a connected monitor."""
+    if IS_WINDOWS:
+        try:
+            import ctypes
+            from ctypes import wintypes
+            monitor_from_point = ctypes.windll.user32.MonitorFromPoint
+            monitor_from_point.argtypes = [wintypes.POINT, wintypes.DWORD]
+            monitor_from_point.restype = ctypes.c_void_p
+            return bool(monitor_from_point(wintypes.POINT(x, y), 0))   # 0 = MONITOR_DEFAULTTONULL
+        except (AttributeError, OSError):
+            pass
+    elif IS_MAC:
+        return True     # the widget keeps its title bar there, and macOS keeps title bars on screen
+    # X11: the screen spans every monitor (on Windows, only the primary one: a fallback)
+    return 0 <= x < root.winfo_screenwidth() and 0 <= y < root.winfo_screenheight()
+
 
 def run_widget(show, interval, opacity, font_size=None):
     try:
@@ -612,7 +690,11 @@ def run_widget(show, interval, opacity, font_size=None):
     cfg = load_config()
     pos = cfg.get('widget_pos')
     if isinstance(pos, list) and len(pos) == 2:
-        root.geometry('+{}+{}'.format(int(pos[0]), int(pos[1])))
+        x, y = int(pos[0]), int(pos[1])
+        # The saved spot may belong to a monitor that is not connected any more: then let the
+        # system place the window (as on the first run) instead of opening it off-screen.
+        if point_on_screen(root, x + 20, y + 10):
+            root.geometry('+{}+{}'.format(x, y))
     import tkinter.font as tkfont
     family, default_size = ('Consolas', 10) if IS_WINDOWS else ('Menlo', 10) if IS_MAC else ('DejaVu Sans Mono', 9)
     size = int(font_size or load_config().get('widget_font_size') or default_size)
@@ -962,6 +1044,10 @@ def run_tray(show, interval):
         save_config(show=value)
         refresh(icon)
 
+    def show_action(value):
+        # pystray rejects actions with more than two parameters, so no `v=key` default argument
+        return lambda icon, _item: set_show(icon, value)
+
     def menu_items():
         # Built every time the menu opens, so it always shows the latest data; if the last
         # fetch is older than 15 s, refresh from the caches first (instant, no network wait).
@@ -974,7 +1060,7 @@ def run_tray(show, interval):
         yield pystray.MenuItem('Open widget', open_widget, default=True)
         yield pystray.MenuItem('Refresh', lambda icon, item: refresh(icon))
         yield pystray.MenuItem('Show', pystray.Menu(*[
-            pystray.MenuItem(text, lambda icon, item, v=key: set_show(icon, v), radio=True,
+            pystray.MenuItem(text, show_action(key), radio=True,
                              checked=lambda item, k=key: state['show'] == k)
             for key, text in SHOW_LABELS]))
         yield pystray.MenuItem('Quit', lambda icon, item: icon.stop())
@@ -1064,6 +1150,9 @@ def main():
     g.add_argument('--tray', action='store_true', help='system tray / menu-bar icon (needs pystray + pillow)')
     g.add_argument('--statusline', action='store_true', help='Claude Code status line mode (JSON on stdin)')
     g.add_argument('--json', action='store_true', help='JSON output')
+    g.add_argument('--days', nargs='?', type=int, const=ACTIVITY_DAYS, metavar='N',
+                   help='OpenRouter spend per day and model, last N completed UTC days '
+                        '(default and maximum {}; needs the management key)'.format(ACTIVITY_DAYS))
     g.add_argument('--install-statusline', action='store_true', help='write statusLine into ~/.claude/settings.json')
     g.add_argument('--uninstall-statusline', action='store_true')
     ap.add_argument('--show', choices=SHOW_CHOICES, help='what to display (default: saved choice, else both)')
@@ -1080,7 +1169,7 @@ def main():
     if show not in SHOW_CHOICES:
         show = 'both'
     mode_given = any((args.watch is not None, args.widget, args.tray, args.statusline, args.json,
-                      args.install_statusline, args.uninstall_statusline))
+                      args.days is not None, args.install_statusline, args.uninstall_statusline))
     opacity = args.opacity if args.opacity is not None else cfg.get('widget_opacity', 0.95)
     if args.save:
         if not args.show and args.opacity is None and args.font_size is None:
@@ -1123,6 +1212,9 @@ def main():
         return run_tray(show, interval)
 
     Color.enabled = sys.stdout.isatty() and not args.no_color
+    if args.days is not None:
+        print(days_report(fetch_openrouter_days(TIMEOUT_NORMAL), min(ACTIVITY_DAYS, max(1, args.days))))
+        return
     if args.json:
         o, cl = collect(show)
         print(as_json(o, cl))
