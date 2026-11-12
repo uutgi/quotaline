@@ -9,7 +9,11 @@ Claude Fable 5.1: ctx 23%, 5h 16% (10:08), 7d 34% (Tue 16:11)  |  OpenRouter: $8
 ```
 
 That is the Claude Code status line. The same script also runs as a small window, a floating
-widget or a tray icon:
+widget or a tray icon. The widget, on Windows 11:
+
+![The quotaline widget on Windows 11: OpenRouter balance and spend, Claude Code 5-hour and 7-day limits with their reset times](screenshot.png)
+
+The same report in a terminal (`--watch`, or a one-shot run):
 
 ```
 quotaline  2026-11-08 08:38
