@@ -54,7 +54,9 @@ a bug. Colours everywhere follow a continuous green → yellow → red gradient 
 The tray is the only mode with extra packages. On Windows 11 new tray icons start in the hidden
 overflow (the `^` chevron); the Windows installer pins quotaline's icon to the visible corner for
 you, and you can always drag it in or out. Hover for the numbers, right-click for the menu,
-left-click opens the widget. On macOS the same mode puts the icon in the menu bar (UI updates are marshalled to the main thread, as AppKit requires). The widget and the
+left-click opens the widget. `--tray --open-widget` starts both at once (handy for a launcher).
+Only one tray and one widget run at a time: starting the tray again just opens the widget, and a
+second widget does not open over the first. On macOS the same mode puts the icon in the menu bar (UI updates are marshalled to the main thread, as AppKit requires). The widget and the
 tray refresh every 60 s (`--interval SEC` to change it).
 
 ## Install
@@ -79,7 +81,9 @@ and whether it should start with your session. The answers can also be given as 
 
 - **Windows:** `powershell -ExecutionPolicy Bypass -File install_windows.ps1`
   Creates `quotaline.lnk` (here and on the Desktop) with the folder icon; with autostart, a copy in
-  the Startup folder.
+  the Startup folder. It also offers a fifth launcher, `tray+widget` (the default there): the
+  tray icon plus the widget. The widget alone has no taskbar icon, since it has no title bar. If
+  `pip install pystray pillow` fails, `tray+widget` falls back to the widget alone.
 - **Linux:** `bash install_linux.sh`
   Sets the folder icon, writes `quotaline.desktop` to the Desktop and the applications menu; with
   autostart, a copy in `~/.config/autostart`.
@@ -107,7 +111,7 @@ then `python3 quotaline.py --widget` or `--tray` or `--watch` from any launcher 
 quotaline.py                        one-shot report
 quotaline.py --watch                refreshing counter in the terminal
 quotaline.py --widget               floating always-on-top panel
-quotaline.py --tray                 tray / menu-bar icon
+quotaline.py --tray                 tray / menu-bar icon (--open-widget: the widget too)
 quotaline.py --statusline           Claude Code status line mode (JSON on stdin)
 quotaline.py --json                 same data as JSON
 quotaline.py --days [N]             OpenRouter spend per day and model, last N completed days (30)

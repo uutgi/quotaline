@@ -9,7 +9,9 @@ Modes:
   quotaline.py                        one-shot report
   quotaline.py --watch [SECONDS]      refreshing counter for a small terminal window (default 60 s)
   quotaline.py --widget               small always-on-top window (tkinter, no extra packages)
-  quotaline.py --tray                 system tray / menu-bar icon (needs: pip install pystray pillow)
+  quotaline.py --tray                 system tray / menu-bar icon (needs: pip install pystray pillow);
+                                      add --open-widget to open the widget too. One tray and one
+                                      widget at most: starting the tray again opens the widget.
   quotaline.py --statusline           Claude Code status line (reads Claude Code's JSON on stdin)
   quotaline.py --json                 the same data as JSON
   quotaline.py --days [N]             OpenRouter spend per day and model, last N completed days (30)
@@ -641,6 +643,41 @@ def as_json(o, cl):
 
 # ---------------------------------------------------------------- widget (tkinter, stdlib)
 
+_HELD_LOCKS = []   # kept referenced so each lock lives as long as the process
+
+
+def single_instance(name):
+    """Take a per-user lock held for the life of the process; False when another one holds it."""
+    if IS_WINDOWS:
+        try:
+            import ctypes
+            kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+            kernel32.CreateMutexW.restype = ctypes.c_void_p
+            handle = kernel32.CreateMutexW(None, False, 'Local\\quotaline-' + name)
+            if not handle:
+                return True                      # cannot tell: let this one run
+            if ctypes.get_last_error() == 183:   # ERROR_ALREADY_EXISTS
+                kernel32.CloseHandle(ctypes.c_void_p(handle))
+                return False
+            _HELD_LOCKS.append(handle)
+        except (AttributeError, OSError):
+            pass
+        return True
+    try:
+        import fcntl
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        f = open(os.path.join(CACHE_DIR, name + '.lock'), 'w')
+    except (ImportError, OSError):
+        return True
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        f.close()
+        return False
+    _HELD_LOCKS.append(f)
+    return True
+
+
 def point_on_screen(root, x, y):
     """True when (x, y) lies on a connected monitor."""
     if IS_WINDOWS:
@@ -660,6 +697,8 @@ def point_on_screen(root, x, y):
 
 
 def run_widget(show, interval, opacity, font_size=None):
+    if not single_instance('widget'):
+        return      # already open, and always on top: a second panel would sit on the first one
     try:
         import tkinter as tk
     except ImportError:
@@ -1005,7 +1044,17 @@ def run_widget(show, interval, opacity, font_size=None):
 
 # ---------------------------------------------------------------- tray / menu bar (pystray, optional)
 
-def run_tray(show, interval):
+def spawn_widget(show, interval):
+    subprocess.Popen([sys.executable, os.path.abspath(__file__), '--widget', '--show', show,
+                      '--interval', str(interval)])
+
+
+def run_tray(show, interval, open_widget_now=False):
+    if not single_instance('tray'):
+        # The tray is already in the bar (e.g. the launcher was clicked again): a second icon
+        # would only be a duplicate, so give the user the widget instead.
+        spawn_widget(show, interval)
+        return
     try:
         import pystray
         from PIL import Image, ImageDraw
@@ -1034,8 +1083,7 @@ def run_tray(show, interval):
         state['ts'] = time.time()
 
     def open_widget(_icon=None, _item=None):
-        subprocess.Popen([sys.executable, os.path.abspath(__file__), '--widget', '--show', state['show'],
-                          '--interval', str(interval)])
+        spawn_widget(state['show'], interval)
 
     def set_show(icon, value):
         if value == state['show']:
@@ -1097,6 +1145,8 @@ def run_tray(show, interval):
                 pass
             time.sleep(interval)
 
+    if open_widget_now:
+        open_widget()
     gather()
     icon = pystray.Icon('quotaline', make_icon(worst_used(state['o'], state['cl'], state['show'])),
                         summary(state['o'], state['cl'], state['show'])[:120], pystray.Menu(menu_items))
@@ -1157,6 +1207,7 @@ def main():
     g.add_argument('--uninstall-statusline', action='store_true')
     ap.add_argument('--show', choices=SHOW_CHOICES, help='what to display (default: saved choice, else both)')
     ap.add_argument('--save', action='store_true', help='save --show as the default')
+    ap.add_argument('--open-widget', action='store_true', help='with --tray: open the widget too at start')
     ap.add_argument('--interval', type=int, default=60, metavar='SEC', help='refresh period (60)')
     ap.add_argument('--opacity', type=float, metavar='0.2-1', help='widget opacity (default: saved value, else 0.95)')
     ap.add_argument('--font-size', type=int, metavar='7-24', help='widget font size (default: saved value, else per platform)')
@@ -1209,7 +1260,7 @@ def main():
     if args.widget:
         return run_widget(show, interval, opacity, args.font_size)
     if args.tray:
-        return run_tray(show, interval)
+        return run_tray(show, interval, args.open_widget)
 
     Color.enabled = sys.stdout.isatty() and not args.no_color
     if args.days is not None:

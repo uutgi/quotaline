@@ -1,14 +1,16 @@
 # Windows installer for quotaline. Asks three questions (or takes them as parameters):
 #   -Show both|claude|openrouter     what to display
-#   -Launcher window|widget|tray|none  window = small terminal, widget = floating panel (no extra
-#                                      packages), tray = notification-area icon (installs pystray)
+#   -Launcher tray+widget|window|widget|tray|none
+#       tray+widget = notification-area icon plus the floating panel (installs pystray; the default)
+#       window = small terminal, widget = floating panel alone (no extra packages, but no icon in
+#       the taskbar: the panel has no title bar), tray = notification-area icon alone
 #   -Autostart yes|no                start the launcher with Windows
 # Also configures the Claude Code status line when `claude` is installed.
 #   powershell -ExecutionPolicy Bypass -File install_windows.ps1
-#   powershell -ExecutionPolicy Bypass -File install_windows.ps1 -Show both -Launcher widget -Autostart no
+#   powershell -ExecutionPolicy Bypass -File install_windows.ps1 -Show both -Launcher tray+widget -Autostart no
 param(
     [ValidateSet('both', 'claude', 'openrouter')] [string]$Show,
-    [ValidateSet('window', 'widget', 'tray', 'none')] [string]$Launcher,
+    [ValidateSet('tray+widget', 'window', 'widget', 'tray', 'none')] [string]$Launcher,
     [ValidateSet('yes', 'no')] [string]$Autostart
 )
 $dir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -27,7 +29,7 @@ function Ask($question, $choices, $default) {
     Write-Host "  '$answer' is not an option, using $default"; return $default
 }
 if (-not $Show) { $Show = Ask 'What to show' @('both', 'claude', 'openrouter') 'both' }
-if (-not $Launcher) { $Launcher = Ask 'Launcher' @('window', 'widget', 'tray', 'none') 'widget' }
+if (-not $Launcher) { $Launcher = Ask 'Launcher' @('tray+widget', 'window', 'widget', 'tray', 'none') 'tray+widget' }
 if (-not $Autostart -and $Launcher -ne 'none') { $Autostart = Ask 'Start it with Windows' @('yes', 'no') 'no' }
 
 # 1. Saved preference
@@ -42,15 +44,24 @@ if (Get-Command claude -ErrorAction SilentlyContinue) {
 
 # 3. Launcher shortcut (in this folder and on the Desktop)
 if ($Launcher -ne 'none') {
-    if ($Launcher -eq 'tray') {
+    $withTray = $Launcher -like 'tray*'
+    if ($withTray) {
         & $python -m pip install --quiet pystray pillow
-        if ($LASTEXITCODE -ne 0) { Write-Host "pip install pystray pillow failed; the tray will not start."; }
+        if ($LASTEXITCODE -ne 0) {
+            if ($Launcher -eq 'tray+widget') {
+                Write-Host "pip install pystray pillow failed; the launcher opens the widget alone."
+                $Launcher = 'widget'; $withTray = $false
+            } else {
+                Write-Host "pip install pystray pillow failed; the tray will not start."
+            }
+        }
     }
     $shell = New-Object -ComObject WScript.Shell
     $targets = @{
-        window = @("$dir\quotaline.bat", '')
-        widget = @($pythonw, "`"$dir\quotaline.py`" --widget")
-        tray   = @($pythonw, "`"$dir\quotaline.py`" --tray")
+        window        = @("$dir\quotaline.bat", '')
+        widget        = @($pythonw, "`"$dir\quotaline.py`" --widget")
+        tray          = @($pythonw, "`"$dir\quotaline.py`" --tray")
+        'tray+widget' = @($pythonw, "`"$dir\quotaline.py`" --tray --open-widget")
     }
     $desktop = [Environment]::GetFolderPath('Desktop')
     $paths = @("$dir\quotaline.lnk", "$desktop\quotaline.lnk")
@@ -65,9 +76,10 @@ if ($Launcher -ne 'none') {
         $lnk.Save()
         Write-Host "Shortcut: $path"
     }
-    if ($Launcher -eq 'tray') {
-        # Windows 11 hides new tray icons in the overflow: start the tray once and promote its icon to the bar.
-        Start-Process -FilePath $pythonw -ArgumentList "`"$dir\quotaline.py`" --tray" | Out-Null
+    if ($withTray) {
+        # Windows 11 hides new tray icons in the overflow: start the launcher once and promote its icon
+        # to the bar. If the tray is already running, this only opens the widget (one tray at most).
+        Start-Process -FilePath $targets[$Launcher][0] -ArgumentList $targets[$Launcher][1] | Out-Null
         Start-Sleep -Seconds 6
         $entries = Get-ChildItem 'HKCU:\Control Panel\NotifyIconSettings' -ErrorAction SilentlyContinue |
             Where-Object { (Get-ItemProperty $_.PSPath).ExecutablePath -ieq $pythonw }
