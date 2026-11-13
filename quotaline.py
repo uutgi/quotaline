@@ -922,20 +922,12 @@ def run_widget(show, interval, opacity, font_size=None):
     menu.add_separator()
     menu.add_command(label='Quit', command=root.destroy)
 
-    def nudge_opacity(delta):
-        current = float(root.attributes('-alpha') or 1.0)
-        set_opacity(round(current + delta, 2), save=True)
-
-    for key in ('<plus>', '<KP_Add>', '<equal>'):
-        root.bind(key, lambda _e: nudge_opacity(+0.1))
-    for key in ('<minus>', '<KP_Subtract>'):
-        root.bind(key, lambda _e: nudge_opacity(-0.1))
+    # No bare-key shortcuts (+ / - for opacity, 1 / 2 / 3 for Show): clicking or dragging the panel
+    # gives it the keyboard focus, so whatever was typed next "in the terminal" landed here and
+    # silently faded the panel to 20 % or switched what it shows. Only Ctrl + / Ctrl - remain.
     root.bind('<Control-plus>', lambda _e: set_font_size(text_font.cget('size') + 1, save=True))
     root.bind('<Control-equal>', lambda _e: set_font_size(text_font.cget('size') + 1, save=True))
     root.bind('<Control-minus>', lambda _e: set_font_size(text_font.cget('size') - 1, save=True))
-    root.bind('<Key-1>', lambda _e: set_show('both'))          # 1 both, 2 Claude, 3 OpenRouter
-    root.bind('<Key-2>', lambda _e: set_show('claude'))
-    root.bind('<Key-3>', lambda _e: set_show('openrouter'))
 
     def popup(e):
         if IS_MAC:
@@ -1045,8 +1037,8 @@ def run_widget(show, interval, opacity, font_size=None):
 # ---------------------------------------------------------------- tray / menu bar (pystray, optional)
 
 def spawn_widget(show, interval):
-    subprocess.Popen([sys.executable, os.path.abspath(__file__), '--widget', '--show', show,
-                      '--interval', str(interval)])
+    return subprocess.Popen([sys.executable, os.path.abspath(__file__), '--widget', '--show', show,
+                             '--interval', str(interval)])
 
 
 def run_tray(show, interval, open_widget_now=False):
@@ -1077,13 +1069,26 @@ def run_tray(show, interval, open_widget_now=False):
         return img
 
     state = {'o': None, 'cl': None, 'ts': 0.0, 'show': show}
+    stopping = threading.Event()
+    widgets = []       # widget processes opened from this tray: Quit closes them too
 
     def gather(max_age=0):
         state['o'], state['cl'] = collect(state['show'], max_age=max_age)
         state['ts'] = time.time()
 
     def open_widget(_icon=None, _item=None):
-        spawn_widget(state['show'], interval)
+        widgets[:] = [p for p in widgets if p.poll() is None]
+        widgets.append(spawn_widget(state['show'], interval))
+
+    def quit_all(icon, _item=None):
+        stopping.set()
+        for p in widgets:
+            if p.poll() is None:
+                try:
+                    p.terminate()
+                except OSError:
+                    pass
+        icon.stop()
 
     def set_show(icon, value):
         if value == state['show']:
@@ -1111,7 +1116,7 @@ def run_tray(show, interval, open_widget_now=False):
             pystray.MenuItem(text, show_action(key), radio=True,
                              checked=lambda item, k=key: state['show'] == k)
             for key, text in SHOW_LABELS]))
-        yield pystray.MenuItem('Quit', lambda icon, item: icon.stop())
+        yield pystray.MenuItem('Quit', quit_all)
 
     def apply_ui(icon, used, title):
         icon.icon = make_icon(used)
@@ -1123,6 +1128,8 @@ def run_tray(show, interval, open_widget_now=False):
 
     def refresh(icon):
         gather()   # network and files: fine on any thread
+        if stopping.is_set():
+            return     # quit while fetching: the icon is gone, leave it alone
         used = worst_used(state['o'], state['cl'], state['show'])
         title = summary(state['o'], state['cl'], state['show'])[:120]
         if IS_MAC:
@@ -1137,13 +1144,21 @@ def run_tray(show, interval, open_widget_now=False):
         apply_ui(icon, used, title)
 
     def loop(icon):
+        # pystray runs this in a non-daemon thread, joins it on stop() (freezing the menu up to 5 s
+        # meanwhile) and never sets icon.visible back to False: a loop here outlived Quit and kept
+        # the process alive with no icon, holding the single-instance lock, so the launcher then
+        # opened only the widget. The refresh therefore runs in a daemon thread and this returns.
         icon.visible = True
-        while icon.visible:
-            try:
-                refresh(icon)
-            except Exception:  # noqa: BLE001 - keep the tray alive whatever happens
-                pass
-            time.sleep(interval)
+
+        def worker():
+            while not stopping.is_set():
+                try:
+                    refresh(icon)
+                except Exception:  # noqa: BLE001 - keep the tray alive whatever happens
+                    pass
+                stopping.wait(interval)
+
+        threading.Thread(target=worker, daemon=True).start()
 
     if open_widget_now:
         open_widget()

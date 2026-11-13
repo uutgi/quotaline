@@ -59,6 +59,7 @@ The tray is the only mode with extra packages. On Windows 11 new tray icons star
 overflow (the `^` chevron); the Windows installer pins quotaline's icon to the visible corner for
 you, and you can always drag it in or out. Hover for the numbers, right-click for the menu,
 left-click opens the widget. `--tray --open-widget` starts both at once (handy for a launcher).
+Quit in the tray menu closes the widgets it opened as well; × on the widget closes only the widget.
 Only one tray and one widget run at a time: starting the tray again just opens the widget, and a
 second widget does not open over the first. On macOS the same mode puts the icon in the menu bar (UI updates are marshalled to the main thread, as AppKit requires). The widget and the
 tray refresh every 60 s (`--interval SEC` to change it).
@@ -123,10 +124,10 @@ quotaline.py --install-statusline / --uninstall-statusline
 
   --show both|claude|openrouter   what to display (default: the saved choice, else both)
   --save                          save --show, --opacity and/or --font-size as the default
-  In the widget (≡ row, right-click > Show, or keys 1 / 2 / 3) and in the tray menu (Show) the
+  In the widget (≡ row or right-click > Show) and in the tray menu (Show) the
   Both / Claude / OpenRouter choice can be changed on the fly; it is saved as the new default.
   --interval SEC                  refresh period for --watch / --widget / --tray (60)
-  --opacity 0.2-1                 widget opacity (default 0.95); also from the widget's menu or + / -
+  --opacity 0.2-1                 widget opacity (default 0.95); also from the widget's menu
   --font-size 7-24                widget text size; also A- / A+ in the widget's menu or Ctrl + / Ctrl -
   --no-color
 ```
