@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # macOS installer for quotaline (written without a Mac at hand: please report what breaks).
-#   bash install_macos.sh [both|claude|openrouter] [widget|tray|none] [yes|no]
-#     1. what to show   2. launcher: widget = floating panel (tkinter, ships with python.org's
-#     Python), tray = menu-bar icon (installs pystray)   3. start it at login (launchd agent)
+#   bash install_macos.sh [both|claude|openrouter] [tray+widget|widget|tray|none] [yes|no]
+#     1. what to show
+#     2. launcher: tray+widget = menu-bar icon plus the floating panel (the default), widget =
+#        floating panel alone (tkinter), tray = menu-bar icon alone. The menu-bar icon installs
+#        pystray and pillow; if that fails, tray+widget falls back to the widget alone.
+#     3. start it at login (launchd agent)
 # Also configures the Claude Code status line when `claude` is installed.
 set -euo pipefail
 
@@ -52,7 +55,7 @@ ask() {
   echo "$3"
 }
 SHOW="${1:-$(ask 'What to show' 'both|claude|openrouter' both)}"
-LAUNCHER="${2:-$(ask 'Launcher' 'widget|tray|none' tray)}"
+LAUNCHER="${2:-$(ask 'Launcher' 'tray+widget|widget|tray|none' tray+widget)}"
 AUTOSTART="no"
 [ "$LAUNCHER" != none ] && AUTOSTART="${3:-$(ask 'Start it at login' 'yes|no' no)}"
 
@@ -68,13 +71,29 @@ fi
 
 # 3. Launcher: a double-clickable .command on the Desktop, and optionally a launchd agent
 if [ "$LAUNCHER" != none ]; then
-  if [ "$LAUNCHER" = tray ]; then
-    "$PY" -m pip install --quiet pystray pillow || echo "WARNING: pip install pystray pillow failed"
-  else
-    "$PY" -c 'import tkinter' 2>/dev/null || echo "WARNING: tkinter is missing in this Python; use python.org's installer or brew install python-tk"
-  fi
+  case "$LAUNCHER" in
+    tray|tray+widget)
+      if ! { "$PY" -m pip install --quiet pystray pillow && "$PY" -c 'import pystray, PIL' 2>/dev/null; }; then
+        if [ "$LAUNCHER" = tray+widget ]; then
+          echo "WARNING: pip install pystray pillow failed; the launcher opens the widget alone."
+          LAUNCHER=widget
+        else
+          echo "WARNING: pip install pystray pillow failed; the menu-bar icon will not start."
+        fi
+      fi ;;
+  esac
+  case "$LAUNCHER" in
+    widget|tray+widget)
+      "$PY" -c 'import tkinter' 2>/dev/null || echo "WARNING: tkinter is missing in this Python; use python.org's installer or brew install python-tk" ;;
+  esac
+  case "$LAUNCHER" in
+    tray+widget) ARGS=(--tray --open-widget) ;;
+    *) ARGS=("--$LAUNCHER") ;;
+  esac
+  ARGS_XML=""
+  for a in "${ARGS[@]}"; do ARGS_XML="$ARGS_XML<string>$a</string>"; done
   CMD="$HOME/Desktop/quotaline.command"
-  printf '#!/usr/bin/env bash\nnohup "%s" "%s" --%s >/dev/null 2>&1 &\n' "$PY" "$DIR/quotaline.py" "$LAUNCHER" > "$CMD"
+  printf '#!/usr/bin/env bash\nnohup "%s" "%s" %s >/dev/null 2>&1 &\n' "$PY" "$DIR/quotaline.py" "${ARGS[*]}" > "$CMD"
   chmod +x "$CMD"
   echo "Launcher: $CMD (double-click)"
   PLIST="$HOME/Library/LaunchAgents/quotaline.plist"
@@ -85,7 +104,7 @@ if [ "$LAUNCHER" != none ]; then
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>quotaline</string>
-  <key>ProgramArguments</key><array><string>$PY</string><string>$DIR/quotaline.py</string><string>--$LAUNCHER</string></array>
+  <key>ProgramArguments</key><array><string>$PY</string><string>$DIR/quotaline.py</string>$ARGS_XML</array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><false/>
 </dict></plist>

@@ -81,17 +81,21 @@ Claude.
 3. nothing, if OpenCode is logged in to OpenRouter: the key is read from OpenCode's `auth.json`.
 
 Then run the installer for your system. Each one asks three questions: what to show
-(`both`, `claude`, `openrouter`), which launcher you want (`window`, `widget`, `tray`, `none`)
-and whether it should start with your session. The answers can also be given as arguments.
+(`both`, `claude`, `openrouter`), which launcher you want (`tray+widget`, `window`, `widget`,
+`tray`, `none`; macOS has no `window`) and whether it should start with your session. The answers
+can also be given as arguments. `tray+widget`, the default everywhere, starts the tray icon plus
+the widget: on Windows and Linux the widget alone has no taskbar entry, since it has no title bar.
+If `pystray` and `pillow` cannot be installed, `tray+widget` falls back to the widget alone.
 
 - **Windows:** `powershell -ExecutionPolicy Bypass -File install_windows.ps1`
   Creates `quotaline.lnk` (here and on the Desktop) with the folder icon; with autostart, a copy in
-  the Startup folder. It also offers a fifth launcher, `tray+widget` (the default there): the
-  tray icon plus the widget. The widget alone has no taskbar icon, since it has no title bar. If
-  `pip install pystray pillow` fails, `tray+widget` falls back to the widget alone.
+  the Startup folder.
 - **Linux:** `bash install_linux.sh`
   Sets the folder icon, writes `quotaline.desktop` to the Desktop and the applications menu; with
-  autostart, a copy in `~/.config/autostart`.
+  autostart, a copy in `~/.config/autostart`. Where `pip install --user` is refused (Debian 12+,
+  Ubuntu 23.04+, Mint 22+: PEP 668), the tray's packages go into a virtualenv in
+  `~/.local/share/quotaline/venv` that still sees the system's `python3-gi` and `python3-tk`; that
+  needs `sudo apt install python3-venv`.
 - **macOS:** `bash install_macos.sh`
   Writes `quotaline.command` on the Desktop; with autostart, a launchd agent. **Tk 8.6.12 and
   older ignore mouse clicks on macOS 14 and later** ([CPython issue 110218](https://github.com/python/cpython/issues/110218)),
