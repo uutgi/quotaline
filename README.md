@@ -22,9 +22,9 @@ OpenRouter
   Spent:  today $0.00, week $1.91, month $1.91, all time $1.91
   :free models today: 0 of 1000 requests
 
-Claude Code  (last update 2 min ago, Fable 5.1)
-  5h:  ██░░░░░░░░  19% used, resets 13:10
-  7d:  ████░░░░░░  35% used, resets Thu 13:00
+Claude Code Fable 5.1  (last change 2 min ago)
+  5h:  ██░░░░░░░░  19% used, resets 13:10 (in 2h 36m)
+  7d:  ████░░░░░░  35% used, resets Thu 13:00 (in 3d 2h)
 ```
 
 ## Why
@@ -43,8 +43,19 @@ installing a runtime or handing my credentials to anything. This is it.
 | OpenRouter | Spend per day and model, last 30 completed UTC days, all keys of the account (`--days`, optional) | `GET /api/v1/activity` with the same management key (documented) |
 | Claude Code | 5-hour and 7-day plan limits: % used and reset time | Claude Code hands them to the status line itself (`rate_limits`, documented, v2.1.251+). The script caches them in `~/.cache/quotaline/claude.json` so the other modes can show them outside Claude Code, with their age |
 
-Reset times come with a countdown (`13:10, 2h36m`). Claude's limits appear after the first reply of each session. That is documented behaviour, not
-a bug. Colours everywhere follow a continuous green → yellow → red gradient by percentage used, anchored at a clear yellow for 50 % and an unmistakable red for 80 %: the status line text, the report, the widget's text and border, and the tray dot (the dot and the border show the worst of what is displayed). Terminals without 24-bit colour get three plain steps instead; set `QUOTALINE_TRUECOLOR=1` or `0` to force either.
+Reset times come with a countdown (`13:10, 2h36m`). Claude Code only knows its limits after the
+first reply of a session. That is documented behaviour, not a bug; until then the status line
+shows the figures another session saved, if there are any. Once a window's reset time has
+passed it reads `0%` (`reset 13:10`) until the next reply opens a new one.
+
+**Several sessions at once.** Every open Claude Code session runs the status line, each with the
+figures of its own last reply, so an idle session would otherwise keep overwriting what a busy
+one has just reported. quotaline keeps the most recent reading of each window instead: a newer
+window replaces an older one, and inside a window the higher figure wins, because usage only
+grows there. A lower figure is believed only from a session whose own numbers have just changed.
+Every status line, the widget and the tray show that merged reading, so they all agree.
+
+Colours everywhere follow a continuous green → yellow → red gradient by percentage used, anchored at a clear yellow for 50 % and an unmistakable red for 80 %: the status line text, the report, the widget's text and border, and the tray dot (the dot and the border show the worst of what is displayed). Terminals without 24-bit colour get three plain steps instead; set `QUOTALINE_TRUECOLOR=1` or `0` to force either.
 
 ## Where you can see it
 
@@ -154,8 +165,9 @@ Days are UTC days, as OpenRouter counts them, and only finished ones: today's sp
 
 The status line refreshes every 30 s; OpenRouter is asked at most once every 5 minutes (cache in
 `~/.cache/quotaline/openrouter.json`). If the network is down, the last known values are shown with
-their age. The status line always refreshes the Claude cache, even with `--show openrouter`, so
-the widget and the tray can show Claude's limits while Claude Code is open.
+their age. The status line always feeds the Claude cache, even with `--show openrouter`, so
+the widget and the tray can show Claude's limits while Claude Code is open. "Last change" in the
+report is the last time those figures moved.
 
 ## Privacy
 
@@ -167,8 +179,9 @@ the widget and the tray can show Claude's limits while Claude Code is open.
 
 ## Limitations
 
-- Claude's limits outside Claude Code are as fresh as the last status-line refresh: if Claude
-  Code is closed, the widget shows the last known values with their age.
+- Claude's limits are as fresh as the last reply Claude Code got on this machine: if Claude
+  Code is closed or idle, the widget shows the last known values with their age. Usage from
+  another computer on the same plan shows up with the next reply here.
 - Per-session OpenCode spend is not counted (OpenCode shows that itself).
 - The dollar cost Claude Code estimates for a session is not shown: on a subscription it means
   nothing.

@@ -35,12 +35,15 @@ Data sources:
   Claude Code: the 5-hour and 7-day plan limits are handed to the status line by Claude Code
     itself (`rate_limits`, documented, v2.1.251+). This script caches them in
     ~/.cache/quotaline/claude.json so the other modes can show them outside Claude Code, together
-    with their age. No credentials are read and no undocumented endpoint is called.
+    with their age. With several sessions open, each one only knows the figures of its own last
+    reply: the cache keeps the most recent reading of each window, and every status line shows
+    that. No credentials are read and no undocumented endpoint is called.
 
 OpenRouter key lookup order: OPENROUTER_API_KEY, openrouter_key.txt next to this script,
 openrouter_key.txt in the parent folder, OpenCode's auth.json. The key is never printed.
 """
 import argparse
+import contextlib
 import datetime
 import json
 import os
@@ -110,10 +113,20 @@ def read_json(path):
 
 def write_json(path, data):
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = path + '.tmp'
+    tmp = '{}.{}.tmp'.format(path, os.getpid())   # several status lines may write at the same instant
     with open(tmp, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, path)
+    for _attempt in range(10):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:     # Windows: another process has the target open this instant
+            time.sleep(0.02)
+    try:
+        os.remove(tmp)
+    except OSError:
+        pass
+    raise PermissionError(path)
 
 
 def load_config():
@@ -412,7 +425,10 @@ def load_openrouter(max_age, timeout):
         return cached
     fresh = fetch_openrouter(timeout)
     if 'key' in fresh or not cached:
-        write_json(CACHE_OPENROUTER, fresh)
+        try:
+            write_json(CACHE_OPENROUTER, fresh)
+        except OSError:
+            pass    # several status lines refreshing at once: one of them wrote it
         return fresh
     cached['stale'] = fresh.get('error', 'error')
     return cached
@@ -427,23 +443,142 @@ def openrouter_level(o):
 
 # ---------------------------------------------------------------- Claude Code
 
-def save_claude_limits(statusline_input):
-    rl = statusline_input.get('rate_limits')
-    if not rl:
+CLAUDE_FIELDS = (('five_hour', '5h'), ('seven_day', '7d'))
+
+
+def _reading(rate_limits, field):
+    """(resets_at, used %) of one window of a rate_limits block, or None when it is absent."""
+    w = (rate_limits or {}).get(field) or {}
+    if not isinstance(w, dict) or w.get('used_percentage') is None:
+        return None
+    return float(w.get('resets_at') or 0), float(w['used_percentage'])
+
+
+def _same_window(a, b):
+    """Two readings belong to the same window when their reset times match, give or take."""
+    return abs(a[0] - b[0]) < 300
+
+
+@contextlib.contextmanager
+def claude_cache_lock(wait=1.0):
+    """Serialise read-modify-write of the Claude cache: with several sessions open their status
+    lines run at the same instant. Yields False when the lock could not be had in `wait` seconds.
+    It is an operating-system lock on a side file, so it goes away with the process."""
+    try:
+        os.makedirs(os.path.dirname(CACHE_CLAUDE), exist_ok=True)
+        f = open(CACHE_CLAUDE + '.lock', 'a+')
+    except OSError:
+        yield False
         return
-    model = (statusline_input.get('model') or {}).get('display_name')
-    write_json(CACHE_CLAUDE, {'ts': time.time(), 'rate_limits': rl, 'model': model,
-                              'version': statusline_input.get('version')})
+    try:
+        deadline, locked = time.time() + wait, False
+        while not locked:
+            try:
+                if IS_WINDOWS:
+                    import msvcrt
+                    f.seek(0)
+                    msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                locked = True
+            except (OSError, ImportError):
+                if time.time() > deadline:
+                    break
+                time.sleep(0.01)
+        yield locked
+    finally:
+        f.close()       # closing the file releases the lock
+
+
+def save_claude_limits(statusline_input):
+    """Merge this session's limits into the shared cache and return the cache.
+
+    Every open Claude Code session runs the status line, each with the figures of its own last
+    reply, so an idle session must not overwrite what a busy one has just reported. Each window
+    (5h, 7d) is judged on its own:
+      - a newer window (later reset time) always replaces an older one, never the reverse;
+      - inside the same window a higher figure wins, because usage only grows there;
+      - a lower figure is believed only from a session whose own figure for that window has just
+        changed: that means a reply has just arrived (limits can be lowered mid-window). Not in
+        the first minute after the last change, though: two replies landing together may be
+        processed out of order;
+      - a session that repeats what it said before adds nothing.
+    Claude Code drops a window from an idle session when it expires; that is not a new reading.
+    """
+    rl = statusline_input.get('rate_limits')
+    with claude_cache_lock() as locked:
+        cache = read_json(CACHE_CLAUDE)
+        if not isinstance(cache, dict):
+            cache = {}
+        if not locked or not isinstance(rl, dict) or not rl:
+            return cache        # nothing to add, or too busy: the next run (30 s) catches up
+        sid = statusline_input.get('session_id') or statusline_input.get('transcript_path')
+        sessions = cache.get('sessions') if isinstance(cache.get('sessions'), dict) else {}
+        prev = sessions.get(sid) if sid is not None else None    # what this session said last time
+        if prev == rl:
+            return cache
+        truth = dict(cache.get('rate_limits') or {})
+        moved = False
+        now = time.time()
+        try:
+            settled = now - float(cache.get('ts') or 0) > 60
+        except (TypeError, ValueError):
+            settled = True
+        for field, _label in CLAUDE_FIELDS:
+            new, old, before = _reading(rl, field), _reading(truth, field), _reading(prev, field)
+            if new is None:
+                continue
+            if old is not None:
+                if before is not None and _same_window(before, new) and before[1] == new[1]:
+                    continue                    # nothing new from this session about this window
+                if not _same_window(new, old):
+                    if new[0] < old[0]:
+                        continue                # an older window never replaces a newer one
+                elif new[1] == old[1] or (new[1] < old[1] and (before is None or not settled)):
+                    continue
+            truth[field] = rl[field]
+            moved = True
+        if sid is not None:
+            sessions[sid] = rl
+        # forget the sessions whose windows all ended more than 8 days ago
+        cache['sessions'] = {k: v for k, v in sessions.items()
+                             if max((_reading(v, f) or (0, 0))[0] for f, _l in CLAUDE_FIELDS) > now - 8 * 86400}
+        if moved or not cache.get('rate_limits'):
+            cache.update(ts=now, rate_limits=truth, version=statusline_input.get('version'),
+                         model=(statusline_input.get('model') or {}).get('display_name'))
+        try:
+            write_json(CACHE_CLAUDE, cache)
+        except OSError:
+            pass    # could not write this time: the next run tries again
+        return cache
 
 
 def claude_windows(rate_limits):
-    """[(label, used %, resets_at epoch)] for the windows that are present."""
+    """[(label, used %, resets_at epoch)] for the windows that are present. A window whose reset
+    time has passed counts as 0 % used: nothing has been spent in the new one yet."""
     out = []
-    for field, label in (('five_hour', '5h'), ('seven_day', '7d')):
+    for field, label in CLAUDE_FIELDS:
         w = (rate_limits or {}).get(field) or {}
         if w.get('used_percentage') is not None:
-            out.append((label, float(w['used_percentage']), w.get('resets_at')))
+            r = w.get('resets_at')
+            out.append((label, 0.0 if window_over(r) else float(w['used_percentage']), r))
     return out
+
+
+def window_over(resets_at):
+    """True once a window's reset time has passed."""
+    try:
+        return resets_at is not None and float(resets_at) <= time.time()
+    except (TypeError, ValueError):
+        return False
+
+
+def resets_short(resets_at):
+    """' (13:10, 2h37m)' while the window runs; ' (reset 13:10)' once it is over."""
+    if window_over(resets_at):
+        return ' (reset ' + clock(resets_at) + ')'
+    return ' (' + clock(resets_at) + ', ' + until(resets_at, compact=True) + ')'
 
 
 def claude_level(cl):
@@ -512,15 +647,17 @@ def claude_short(cl, header='Claude'):
     """'Claude: 5h 22% (13:10), 7d 35% (Thu 13:00)' from the cache (other modes than the status line)."""
     if not cl:
         return header + ': ' + Color.paint('no data yet', Color.DIM)
-    parts = [Color.used(label + ' ' + pct(used), used) + Color.paint(' (' + clock(r) + ', ' + until(r, compact=True) + ')', Color.DIM)
+    parts = [Color.used(label + ' ' + pct(used), used) + Color.paint(resets_short(r), Color.DIM)
              for label, used, r in claude_windows(cl.get('rate_limits'))]
     return header + ': ' + ', '.join(parts)
 
 
-def statusline(d, show):
+def statusline(d, show, limits=None):
     """One line: 'Claude <model>: ctx, 5h, 7d  |  OpenRouter: ...'.
 
-    Only ASCII separators: box-drawing and arrow glyphs render badly in some terminal fonts.
+    `limits` are the merged figures of every open session (see save_claude_limits); this
+    session's own may be older. Only ASCII separators: box-drawing and arrow glyphs render badly
+    in some terminal fonts.
     """
     blocks = []
     if show != 'openrouter':
@@ -530,11 +667,11 @@ def statusline(d, show):
         ctx = (d.get('context_window') or {}).get('used_percentage')
         if ctx is not None:
             parts.append(Color.used('ctx ' + pct(ctx), ctx))
-        windows = claude_windows(d.get('rate_limits'))
+        windows = claude_windows(limits or d.get('rate_limits'))
         if windows:
             for label, used, resets_at in windows:
                 parts.append(Color.used(label + ' ' + pct(used), used)
-                             + Color.paint(' (' + clock(resets_at) + ', ' + until(resets_at, compact=True) + ')', Color.DIM))
+                             + Color.paint(resets_short(resets_at), Color.DIM))
         else:
             parts.append(Color.paint('limits after 1st reply', Color.DIM))
         blocks.append(header + ': ' + ', '.join(parts))
@@ -584,11 +721,14 @@ def report(o, cl, show):
             L.append('Claude Code  ' + Color.paint('(no data yet: filled in by the status line)', Color.DIM))
         else:
             L.append('Claude Code' + (' ' + cl['model'] if cl.get('model') else '')
-                     + Color.paint('  (last update {})'.format(ago(cl.get('ts'))), Color.DIM))
+                     + Color.paint('  (last change {})'.format(ago(cl.get('ts'))), Color.DIM))
             for label, used, resets_at in claude_windows(cl.get('rate_limits')):
-                L.append('  {}:  {}  {} used, resets {}'.format(
-                    label, bar(used / 100), Color.used(pct(used), used), clock(resets_at))
-                         + Color.paint(' (in {})'.format(until(resets_at)), Color.DIM))
+                over = window_over(resets_at)
+                L.append('  {}:  {}  {} used, {} {}'.format(
+                    label, bar(used / 100), Color.used(pct(used), used),
+                    'reset at' if over else 'resets', clock(resets_at))
+                         + Color.paint(' (nothing used since)' if over
+                                       else ' (in {})'.format(until(resets_at)), Color.DIM))
     return '\n'.join(L)
 
 
@@ -1269,8 +1409,8 @@ def main():
             d = json.loads(sys.stdin.read() or '{}')
         except ValueError:
             d = {}
-        save_claude_limits(d)   # always: keeps the cache fresh even when only OpenRouter is shown
-        print(statusline(d, show))
+        cl = save_claude_limits(d)   # always: keeps the cache fresh even when only OpenRouter is shown
+        print(statusline(d, show, cl.get('rate_limits')))
         return
     if args.widget:
         return run_widget(show, interval, opacity, args.font_size)
